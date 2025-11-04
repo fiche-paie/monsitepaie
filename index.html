@@ -217,7 +217,7 @@
                 }
             };
 
-            // Tranches d'imposition 2025
+            // Tranches d'imposition 2025 - MISE À JOUR
             const TRANCHES_IMPOT = [
                 { min: 0, max: 11294, taux: 0 },
                 { min: 11295, max: 28797, taux: 0.11 },
@@ -225,6 +225,10 @@
                 { min: 82342, max: 177106, taux: 0.41 },
                 { min: 177107, max: Infinity, taux: 0.45 }
             ];
+
+            // Seuils décote 2025 (estimés)
+            const SEUIL_DECOTE = 1917; // Seuil 2024 ajusté pour 2025
+            const TAUX_DECOTE = 0.756; // Taux de décote fixe
 
             // Calcul professionnel des cotisations
             function calculerCotisations(brut, type) {
@@ -259,20 +263,51 @@
                 return Math.max(1, parts);
             }
 
-            // Calcul professionnel de l'impôt sur le revenu
-            function calculerImpot(revenuBrutAnnuel, nbParts) {
+            // CALCUL D'IMPÔT CORRIGÉ ET RÉALISTE
+            function calculerImpotRealiste(revenuBrutAnnuel, nbParts) {
+                // 1. Revenu net imposable (abattement forfaitaire 10%)
                 const revenuNetImposable = revenuBrutAnnuel * 0.9;
+                
+                // 2. Revenu par part
                 const revenuParPart = revenuNetImposable / nbParts;
-                let impot = 0;
-
+                
+                // 3. Calcul de l'impôt par tranches
+                let impotParPart = 0;
                 for (const tranche of TRANCHES_IMPOT) {
                     if (revenuParPart > tranche.min) {
                         const montantTranche = Math.min(revenuParPart, tranche.max) - tranche.min;
-                        impot += montantTranche * tranche.taux;
+                        impotParPart += montantTranche * tranche.taux;
                     }
                 }
-
-                return impot * nbParts;
+                
+                // 4. Impôt total avant corrections
+                let impotTotal = impotParPart * nbParts;
+                
+                // 5. Application de la DÉCOTE pour faibles revenus
+                if (impotTotal > 0 && impotTotal < SEUIL_DECOTE) {
+                    const decote = SEUIL_DECOTE - (impotTotal * TAUX_DECOTE);
+                    impotTotal = Math.max(0, impotTotal - decote);
+                }
+                
+                // 6. Plafonnement du quotient familial (pour éviter avantage excessif)
+                if (nbParts > 1) {
+                    // Calcul de l'impôt pour 1 part
+                    let impot1Part = 0;
+                    const revenuParPart1 = revenuNetImposable / 1;
+                    for (const tranche of TRANCHES_IMPOT) {
+                        if (revenuParPart1 > tranche.min) {
+                            const montantTranche = Math.min(revenuParPart1, tranche.max) - tranche.min;
+                            impot1Part += montantTranche * tranche.taux;
+                        }
+                    }
+                    impot1Part = impot1Part * 1;
+                    
+                    // Application du plafonnement
+                    const avantageMax = 1612 * (nbParts - 1); // Plafond 2024 estimé pour 2025
+                    impotTotal = Math.min(impotTotal, impot1Part + avantageMax);
+                }
+                
+                return Math.max(0, impotTotal);
             }
 
             // Calcul du net à payer professionnel AVEC CORRECTION SMIC
@@ -315,18 +350,28 @@
                     `Net à payer : ${resultat.netAPayer.toFixed(2)} €`;
             }
 
-            // Calcul de l'impôt et mise à jour du taux
+            // Calcul de l'impôt et mise à jour du taux - VERSION CORRIGÉE
             window.calculerTauxImpot = function() {
                 const salaireBrutMensuel = parseFloat(document.getElementById('salaireBrut').value) || 0;
                 const revenuBrutAnnuel = salaireBrutMensuel * 12;
                 const nbParts = getNbParts();
                 
-                const impotAnnuel = calculerImpot(revenuBrutAnnuel, nbParts);
+                // Utilisation du calcul réaliste
+                const impotAnnuel = calculerImpotRealiste(revenuBrutAnnuel, nbParts);
                 const tauxImpot = (impotAnnuel / revenuBrutAnnuel) * 100;
                 
                 document.getElementById('tauxImpot').value = tauxImpot.toFixed(2);
-                document.getElementById('helpImpot').innerHTML = 
-                    `Estimé sur un brut annuel de ${revenuBrutAnnuel.toFixed(2)} € (${nbParts} part${nbParts > 1 ? 's' : ''}) — Impôt total estimé : ${impotAnnuel.toFixed(2)} €`;
+                
+                // Message informatif amélioré
+                let message = `Estimé sur un brut annuel de ${revenuBrutAnnuel.toFixed(2)} € (${nbParts} part${nbParts > 1 ? 's' : ''})`;
+                message += ` — Impôt total estimé : ${impotAnnuel.toFixed(2)} €`;
+                
+                // Ajout d'info sur la décote si applicable
+                if (impotAnnuel === 0 && revenuBrutAnnuel > 0) {
+                    message += " (Aucun impôt dû, revenu en dessous du seuil)";
+                }
+                
+                document.getElementById('helpImpot').innerHTML = message;
                 
                 updateApercuNet();
             }
