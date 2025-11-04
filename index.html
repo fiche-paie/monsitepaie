@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="fr">
 <head>
@@ -123,10 +122,6 @@
         <label for="emailEntreprise" class="required">Email</label>
         <input type="email" id="emailEntreprise" value="">
 
-        <label for="logo">Logo (URL ou chemin local):</label>
-        <input type="file" id="logo" accept="image/*">
-        <img id="logoPreview" src="#" alt="Logo Preview" style="display:none; max-width:100px; margin-top:10px;">
-
         <h2>Informations Salarié</h2>
         <label for="nomSalarie" class="required">Nom</label>
         <input type="text" id="nomSalarie" value="JEROME DUBOIS">
@@ -180,7 +175,7 @@
                     Calculer imposition
                 </button>
                 <small id="helpImpot" style="display:block; margin-top:6px; color:#666;">
-                    Estimé sur un brut annuel de 21621.60 € (1 part) — Impôt total estimé : 0.00 €
+                    Cliquez pour calculer l'impôt sur le revenu
                 </small>
             </div>
         </center>
@@ -194,426 +189,298 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.25/jspdf.plugin.autotable.min.js"></script>
     <script>
-        window.onload = function () {
-            const { jsPDF } = window.jspdf;
+        // Constantes 2025 - Source URSSAF
+        const SMIC_HORAIRE_BRUT = 11.88;
+        const SMIC_MENSUEL_BRUT = 1801.80;
+        const SMIC_MENSUEL_NET = 1426.30;
+        const PLF_SS = 3666; // Plafond Sécurité Sociale
+        const HEURES_MENSUELLES = 151.67;
 
-            // Constantes SMIC 2025
-            const SMIC_HORAIRE_BRUT = 11.88;
-            const SMIC_NET_MENSUEL = 1426.30;
-            const PLF_SS = 3666;
-            const HEURES_MENSUELLES = 151.67;
+        // Taux de cotisations 2025 - Source URSSAF
+        const TAUX_COTISATIONS = {
+            // Salariales
+            salariales: {
+                maladie: { taux: 0.0075, plafonne: true },           // 0.75%
+                vieillesse_plafonnee: { taux: 0.069, plafonne: true }, // 6.9%
+                vieillesse_deplafonnee: { taux: 0.004, plafonne: false }, // 0.4%
+                retraite_complementaire1: { taux: 0.0315, plafonne: true }, // 3.15%
+                retraite_complementaire2: { taux: 0.009, plafonne: false, seuil: PLF_SS }, // 0.9%
+                chomage: { taux: 0.024, plafonne: true },            // 2.4%
+                csg_deductible: { taux: 0.068, plafonne: false },    // 6.8%
+                csg_non_deductible: { taux: 0.029, plafonne: false } // 2.9%
+            },
+            // Patronales
+            patronales: {
+                maladie: { taux: 0.13, plafonne: true },             // 13%
+                vieillesse_plafonnee: { taux: 0.0855, plafonne: true }, // 8.55%
+                vieillesse_deplafonnee: { taux: 0.018, plafonne: false }, // 1.8%
+                retraite_complementaire1: { taux: 0.08, plafonne: true }, // 8%
+                retraite_complementaire2: { taux: 0.016, plafonne: false, seuil: PLF_SS }, // 1.6%
+                chomage: { taux: 0.04, plafonne: true },             // 4%
+                formation_pro: { taux: 0.01, plafonne: false },      // 1%
+                taxe_apprentissage: { taux: 0.0068, plafonne: false }, // 0.68%
+                versement_mobilite: { taux: 0.01, plafonne: false }, // 1%
+                ags: { taux: 0.0015, plafonne: false }               // 0.15%
+            }
+        };
 
-            // Calcul des cotisations SALARIALES corrigé
-            function calculerCotisationsSalariales(brut) {
-                const plafond = PLF_SS;
-                const basePlafonnee = Math.min(brut, plafond);
-                const baseDeplafonnee = brut;
+        // Tranches d'imposition 2025
+        const TRANCHES_IMPOT = [
+            { min: 0, max: 11294, taux: 0 },
+            { min: 11295, max: 28797, taux: 0.11 },
+            { min: 28798, max: 82341, taux: 0.30 },
+            { min: 82342, max: 177106, taux: 0.41 },
+            { min: 177107, max: Infinity, taux: 0.45 }
+        ];
+
+        // Calcul professionnel des cotisations
+        function calculerCotisations(brut, type) {
+            const cotisations = TAUX_COTISATIONS[type];
+            const result = {};
+            let total = 0;
+
+            for (const [key, config] of Object.entries(cotisations)) {
+                let base = brut;
                 
-                return {
-                    maladie: basePlafonnee * 0.0075,
-                    vieillessePlafonnee: basePlafonnee * 0.069,
-                    vieillesseDeplafonnee: baseDeplafonnee * 0.004,
-                    retraiteComplementaireTranche1: basePlafonnee * 0.0315,
-                    retraiteComplementaireTranche2: Math.max(0, baseDeplafonnee - plafond) * 0.009,
-                    chomage: basePlafonnee * 0.024,
-                    csgDeductible: baseDeplafonnee * 0.068,
-                    csgNonDeductible: baseDeplafonnee * 0.029
-                };
-            }
-
-            // Calcul des cotisations PATRONALES corrigé
-            function calculerCotisationsPatronales(brut) {
-                const plafond = PLF_SS;
-                const basePlafonnee = Math.min(brut, plafond);
-                const baseDeplafonnee = brut;
+                if (config.plafonne) {
+                    base = Math.min(brut, PLF_SS);
+                } else if (config.seuil) {
+                    base = Math.max(0, brut - config.seuil);
+                }
                 
-                return {
-                    maladie: basePlafonnee * 0.13,
-                    vieillessePlafonnee: basePlafonnee * 0.0855,
-                    vieillesseDeplafonnee: baseDeplafonnee * 0.018,
-                    retraiteComplementaireTranche1: basePlafonnee * 0.08,
-                    retraiteComplementaireTranche2: Math.max(0, baseDeplafonnee - plafond) * 0.016,
-                    chomage: basePlafonnee * 0.04,
-                    formationProfessionnelle: baseDeplafonnee * 0.01,
-                    taxeApprentissage: baseDeplafonnee * 0.0068,
-                    versementMobilite: baseDeplafonnee * 0.01,
-                    ags: baseDeplafonnee * 0.0015
-                };
+                const montant = base * config.taux;
+                result[key] = montant;
+                total += montant;
             }
 
-            // Tranches officielles 2025
-            const TRANCHES_IMPOT = [
-                { min: 0, max: 11294, taux: 0 },
-                { min: 11295, max: 28797, taux: 11 },
-                { min: 28798, max: 82341, taux: 30 },
-                { min: 82342, max: 177106, taux: 41 },
-                { min: 177107, max: Infinity, taux: 45 }
-            ];
+            result.total = total;
+            return result;
+        }
 
-            // Calcul du nombre de parts fiscales
-            function getNbParts() {
-                const statut = parseInt(document.getElementById('statutMarital').value);
-                const enfants = parseInt(document.getElementById('nbEnfants').value);
-                let parts = statut === 2 ? 2 : 1;
-                if (enfants > 0) parts += enfants * 0.5;
-                return Math.max(1, parts);
-            }
+        // Calcul du nombre de parts fiscales
+        function getNbParts() {
+            const statut = parseInt(document.getElementById('statutMarital').value);
+            const enfants = parseInt(document.getElementById('nbEnfants').value) || 0;
+            let parts = statut === 2 ? 2 : 1;
+            if (enfants > 0) parts += enfants * 0.5;
+            return Math.max(1, parts);
+        }
 
-            // Calcul réaliste de l'impôt
-            window.calculerTauxImpot = function() {
-                const salaireBrutMensuel = parseFloat(document.getElementById('salaireBrut').value) || 0;
-                const revenuBrutAnnuel = salaireBrutMensuel * 12;
-                const nbParts = getNbParts();
-                const revenuParPart = revenuBrutAnnuel * 0.9 / nbParts;
-                let impotParPart = 0;
+        // Calcul professionnel de l'impôt sur le revenu
+        function calculerImpot(revenuBrutAnnuel, nbParts) {
+            const revenuNetImposable = revenuBrutAnnuel * 0.9; // Abattement 10%
+            const revenuParPart = revenuNetImposable / nbParts;
+            let impot = 0;
 
-                for (let tranche of TRANCHES_IMPOT) {
-                    const max = tranche.max ?? Infinity;
-                    if (revenuParPart > tranche.min) {
-                        const montantTranche = Math.min(revenuParPart, max) - tranche.min;
-                        impotParPart += montantTranche * (tranche.taux / 100);
-                    }
+            for (const tranche of TRANCHES_IMPOT) {
+                if (revenuParPart > tranche.min) {
+                    const montantTranche = Math.min(revenuParPart, tranche.max) - tranche.min;
+                    impot += montantTranche * tranche.taux;
                 }
-
-                const impotTotal = impotParPart * nbParts;
-                const tauxMoyen = (impotTotal / revenuBrutAnnuel) * 100;
-
-                document.getElementById('tauxImpot').value = tauxMoyen.toFixed(2);
-                document.getElementById('helpImpot').innerHTML = 
-                    `Estimé sur un brut annuel de ${revenuBrutAnnuel.toFixed(2)} € (${nbParts} part${nbParts > 1 ? 's' : ''}) — Impôt total estimé : ${impotTotal.toFixed(2)} €`;
-
-                // Mise à jour du net à payer affiché
-                updateApercuNet();
             }
 
-            // Calcul des jours travaillés
-            function calculerJoursTravailles(dateDebut, dateFin) {
-                const [dayStart, monthStart, yearStart] = dateDebut.split("/").map(Number);
-                const [dayEnd, monthEnd, yearEnd] = dateFin.split("/").map(Number);
-                const debut = new Date(yearStart, monthStart - 1, dayStart);
-                const fin = new Date(yearEnd, monthEnd - 1, dayEnd);
-                const diffTime = Math.abs(fin - debut);
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-                return diffDays;
-            }
+            return impot * nbParts;
+        }
 
-            // Calcul de l'ancienneté
-            function calculerAnciennete(dateEntree, dateFin) {
-                const [day, month, year] = dateEntree.split("/").map(Number);
-                const entree = new Date(year, month - 1, day);
-                const [dayFin, monthFin, yearFin] = dateFin.split("/").map(Number);
-                const fin = new Date(yearFin, monthFin - 1, dayFin);
-                let diffYears = fin.getFullYear() - entree.getFullYear();
-                let diffMonths = fin.getMonth() - entree.getMonth();
-                let diffDays = fin.getDate() - entree.getDate();
-                if (diffMonths < 0 || (diffMonths === 0 && diffDays < 0)) {
-                    diffYears--;
-                }
-                return {
-                    ans: diffYears,
-                    mois: Math.abs(diffMonths + (diffDays < 0 ? -1 : 0))
-                };
-            }
-
-            // Validation des champs
-            function validateInputs() {
-                const requiredFields = [
-                    "nomEntreprise",
-                    "adresseEntreprise",
-                    "siret",
-                    "codeNaf",
-                    "telEntreprise",
-                    "emailEntreprise",
-                    "nomSalarie",
-                    "adresseSalarie",
-                    "secuSalarie",
-                    "dateEntree",
-                    "posteOccupe",
-                    "dateDebut",
-                    "dateFin",
-                    "salaireBrut"
-                ];
-                for (const field of requiredFields) {
-                    const value = document.getElementById(field).value.trim();
-                    if (!value) {
-                        alert(`Le champ "${document.querySelector(`label[for=${field}]`).textContent.replace(' *', '')}" est obligatoire.`);
-                        return false;
-                    }
-                }
-                return true;
-            }
-
-            // Aperçu du net à payer en temps réel
-            function updateApercuNet() {
-                const salaireBrut = parseFloat(document.getElementById("salaireBrut").value) || 0;
-                const tauxImpot = parseFloat(document.getElementById("tauxImpot").value) || 0;
-                
-                // Calcul réaliste avec les vraies cotisations
-                const cotisationsSalariales = calculerCotisationsSalariales(salaireBrut);
-                const totalCotisations = Object.values(cotisationsSalariales).reduce((acc, val) => acc + val, 0);
-                const netImposable = salaireBrut - totalCotisations + cotisationsSalariales.csgNonDeductible;
-                const netAPayer = netImposable * (1 - tauxImpot / 100);
-                
-                document.getElementById("apercuNetAPayer").textContent = 
-                    `Net à payer : ${netAPayer.toFixed(2)} €`;
-            }
-
-            // Génération du PDF
-            window.genererPDF = function () {
-                if (!validateInputs()) return;
-
-                // Récupération des données
-                const nomEntreprise = document.getElementById("nomEntreprise").value;
-                const adresseEntreprise = document.getElementById("adresseEntreprise").value;
-                const siret = document.getElementById("siret").value;
-                const codeNaf = document.getElementById("codeNaf").value;
-                const telEntreprise = document.getElementById("telEntreprise").value;
-                const faxEntreprise = document.getElementById("faxEntreprise").value;
-                const emailEntreprise = document.getElementById("emailEntreprise").value;
-                const nomSalarie = document.getElementById("nomSalarie").value;
-                const adresseSalarie = document.getElementById("adresseSalarie").value;
-                const emailSalarie = document.getElementById("emailSalarie").value;
-                const telSalarie = document.getElementById("telSalarie").value;
-                const secuSalarie = document.getElementById("secuSalarie").value.replace(/\s/g, "");
-                const dateEntree = document.getElementById("dateEntree").value;
-                const posteOccupe = document.getElementById("posteOccupe").value;
-                const dateDebut = document.getElementById("dateDebut").value;
-                const dateFin = document.getElementById("dateFin").value;
-                const salaireBrutMensuel = parseFloat(document.getElementById("salaireBrut").value);
-                const tauxHoraire = parseFloat(document.getElementById("tauxHoraire").value) || 0;
-                const heuresMensuelles = parseFloat(document.getElementById("heuresMensuelles").value) || 0;
-                const heuresSup = parseFloat(document.getElementById("heuresSupplementaires").value) || 0;
-                const majorationHS = parseFloat(document.getElementById("majorationHeuresSup").value) || 0;
-                const statutMarital = parseInt(document.getElementById("statutMarital").value);
-                const nbEnfants = parseInt(document.getElementById("nbEnfants").value);
-                const tauxImpot = parseFloat(document.getElementById("tauxImpot").value) || 0;
-                const couleurTheme = document.getElementById("couleurTheme").value;
-
-                // Calculs
-                const anciennete = calculerAnciennete(dateEntree, dateFin);
-                const [jourDebut, mois, annee] = dateDebut.split("/").map(Number);
-                const joursDansLeMois = new Date(annee, mois, 0).getDate();
-                const joursTravailles = calculerJoursTravailles(dateDebut, dateFin);
-                const salaireBrutProrata = (salaireBrutMensuel / joursDansLeMois) * joursTravailles;
-                const tauxHoraireMajoré = tauxHoraire * (1 + majorationHS / 100);
-                const salaireBrutHSup = heuresSup * tauxHoraireMajoré;
-                const salaireBrutTotal = salaireBrutProrata + salaireBrutHSup;
-
-                // Calcul des cotisations CORRIGÉ
-                const cotisations = {
-                    salariales: calculerCotisationsSalariales(salaireBrutTotal),
-                    patronales: calculerCotisationsPatronales(salaireBrutTotal)
-                };
-
-                const totalSalarial = Object.values(cotisations.salariales).reduce((acc, val) => acc + val, 0);
-                const totalPatronal = Object.values(cotisations.patronales).reduce((acc, val) => acc + val, 0);
-
-                // Calcul CORRECT du net imposable et net à payer
-                const netImposable = salaireBrutTotal - totalSalarial + cotisations.salariales.csgNonDeductible;
-                const impotRevenu = (netImposable * (tauxImpot / 100)) || 0;
-                let netAPayer = netImposable - impotRevenu;
-
-                // Vérification SMIC
-                const isSMIC = Math.abs(tauxHoraire - SMIC_HORAIRE_BRUT) < 0.01 &&
-                               Math.abs(heuresMensuelles - HEURES_MENSUELLES) < 0.01 &&
-                               heuresSup === 0;
-                if (isSMIC) {
-                    netAPayer = SMIC_NET_MENSUEL;
-                }
-
-                // Création du PDF
-                const doc = new jsPDF();
-                const rgbColor = hexToRgb(couleurTheme);
-
-                // Ajouter un encadrement avec des coins arrondis
-                const marginX = 10;
-                const marginY = 10;
-                const pageWidth = 210 - 2 * marginX;
-                const pageHeight = 297 - 2 * marginY;
-                const borderRadius = 5;
-                const lineWidth = 0.25;
-                doc.setDrawColor(rgbColor.r, rgbColor.g, rgbColor.b);
-                doc.setLineWidth(lineWidth);
-                doc.roundedRect(marginX, marginY, pageWidth, pageHeight, borderRadius, borderRadius);
-
-                // Titre centré en haut du PDF
-                doc.setFontSize(14);
-                doc.setTextColor(0, 0, 0);
-                doc.text("BULLETIN DE SALAIRE", 105, 18, { align: 'center' });
-
-                // Informations entreprise
-                const infosEntreprise = [
-                    nomEntreprise,
-                    adresseEntreprise,
-                    `SIRET : ${siret}`,
-                    `Code NAF : ${codeNaf}`,
-                    `Tel : ${telEntreprise}`,
-                    `Fax : ${faxEntreprise}`,
-                    `Email : ${emailEntreprise}`
-                ];
-                const yEntrepriseStart = 23;
-                const yEntrepriseHeight = 34;
-                doc.setFillColor(rgbColor.r, rgbColor.g, rgbColor.b);
-                doc.roundedRect(15, yEntrepriseStart, 80, yEntrepriseHeight, 3, 3, "F");
-                let yPositionEntreprise = yEntrepriseStart + (yEntrepriseHeight / 3) - ((infosEntreprise.length * 2) / 3);
-                infosEntreprise.forEach((line) => {
-                    doc.setFontSize(9);
-                    doc.setTextColor(0, 0, 0);
-                    doc.text(line, 20, yPositionEntreprise, { align: 'left' });
-                    yPositionEntreprise += 4;
-                });
-
-                // Informations salarié
-                const infosSalarie = [
-                    nomSalarie,
-                    adresseSalarie,
-                    `N° DE SECURITE SOCIAL : ${secuSalarie}`,
-                    `Date d'entrée : ${dateEntree} (${anciennete.ans} ans ${anciennete.mois} mois)`,
-                    `Poste Occupé : ${posteOccupe}`,
-                    `Tel : ${telSalarie}`,
-                    `Email : ${emailSalarie}`
-                ];
-                const ySalarieStart = 23;
-                const ySalarieHeight = 34;
-                doc.setFillColor(rgbColor.r, rgbColor.g, rgbColor.b);
-                doc.roundedRect(115, ySalarieStart, 80, ySalarieHeight, 3, 3, "F");
-                let yPositionSalarie = ySalarieStart + (ySalarieHeight / 3) - ((infosSalarie.length * 2) / 3);
-                infosSalarie.forEach((line) => {
-                    doc.setFontSize(9);
-                    doc.setTextColor(0, 0, 0);
-                    doc.text(line, 120, yPositionSalarie, { align: 'left' });
-                    yPositionSalarie += 4;
-                });
-
-                // Période de paie
-                doc.setFont(undefined, 'bold');
-                doc.setFontSize(10);
-                doc.setTextColor(rgbColor.r, rgbColor.g, rgbColor.b);
-                doc.text("PERIODE :", 105, yPositionEntreprise + 8, { align: 'center' });
-                doc.setFontSize(9);
-                doc.setTextColor(0, 0, 0);
-                doc.text(`${dateDebut} au ${dateFin}`, 105, yPositionEntreprise + 13, { align: 'center' });
-                doc.setFont(undefined, 'normal');
-
-                // Tableau des cotisations
-                const lignesPaie = [
-                    ["SALAIRE BRUT MENSUEL", "", "", salaireBrutMensuel.toFixed(2), "", ""],
-                    ["SALAIRE BRUT PRORATA", "", "", salaireBrutProrata.toFixed(2), "", ""],
-                    ["HEURES SUPPLÉMENTAIRES", heuresSup.toFixed(2), `${majorationHS}%`, "", salaireBrutHSup.toFixed(2), ""],
-                    ["Taux horaire", tauxHoraire.toFixed(2), "", "", "", ""],
-                    ["Heures travaillées", heuresMensuelles.toFixed(2), "", "", "", ""],
-                    ["COTISATIONS SALARIALES", "", "", "", "", ""],
-                    ["Maladie - maternité - invalidité - décès", "", "0.75%", cotisations.salariales.maladie.toFixed(2), "", ""],
-                    ["Assurance vieillesse plafonnée", "", "6.9%", cotisations.salariales.vieillessePlafonnee.toFixed(2), "", ""],
-                    ["Assurance vieillesse déplafonnée", "", "0.4%", cotisations.salariales.vieillesseDeplafonnee.toFixed(2), "", ""],
-                    ["Retraite complémentaire tranche 1", "", "3.15%", cotisations.salariales.retraiteComplementaireTranche1.toFixed(2), "", ""],
-                    ["Retraite complémentaire tranche 2", "", "0.9%", cotisations.salariales.retraiteComplementaireTranche2.toFixed(2), "", ""],
-                    ["Chômage", "", "2.4%", cotisations.salariales.chomage.toFixed(2), "", ""],
-                    ["CSG déductible", "", "6.8%", cotisations.salariales.csgDeductible.toFixed(2), "", ""],
-                    ["CSG/CRDS non déductible", "", "2.9%", cotisations.salariales.csgNonDeductible.toFixed(2), "", ""],
-                    ["Impôt sur le revenu prélevé à la source", "", tauxImpot.toFixed(1) + "%", impotRevenu.toFixed(2), "", ""],
-                    ["CONGÉS PAYÉS (10%)", "", "10%", (salaireBrutTotal * 0.1).toFixed(2), "", ""],
-                    ["", "", "TOTAL SALARIAL", totalSalarial.toFixed(2), "", ""],
-                    ["COTISATIONS PATRONALES", "", "", "", "", ""],
-                    ["Maladie - maternité - invalidité - décès", "", "13%", "", "", cotisations.patronales.maladie.toFixed(2)],
-                    ["Assurance vieillesse plafonnée", "", "8.55%", "", "", cotisations.patronales.vieillessePlafonnee.toFixed(2)],
-                    ["Assurance vieillesse déplafonnée", "", "1.8%", "", "", cotisations.patronales.vieillesseDeplafonnee.toFixed(2)],
-                    ["Retraite complémentaire tranche 1", "", "8%", "", "", cotisations.patronales.retraiteComplementaireTranche1.toFixed(2)],
-                    ["Retraite complémentaire tranche 2", "", "1.6%", "", "", cotisations.patronales.retraiteComplementaireTranche2.toFixed(2)],
-                    ["Chômage", "", "4%", "", "", cotisations.patronales.chomage.toFixed(2)],
-                    ["Formation professionnelle", "", "1%", "", "", cotisations.patronales.formationProfessionnelle.toFixed(2)],
-                    ["Taxe d'apprentissage", "", "0.68%", "", "", cotisations.patronales.taxeApprentissage.toFixed(2)],
-                    ["Versement mobilité", "", "1%", "", "", cotisations.patronales.versementMobilite.toFixed(2)],
-                    ["Cotisation AGS", "", "0.15%", "", "", cotisations.patronales.ags.toFixed(2)],
-                    ["", "", "TOTAL PATRONAL", "", "", totalPatronal.toFixed(2)],
-                    ["NET IMPOSABLE", "", "", netImposable.toFixed(2), "", ""],
-                    ["NET À PAYER EN EUROS", "", "", netAPayer.toFixed(2), "", ""]
-                ];
-
-                // Calcul de la largeur totale du tableau
-                const columnWidths = [60, 15, 15, 25, 25, 30];
-                const totalTableWidth = columnWidths.reduce((a, b) => a + b, 0);
-                const startX = (210 - totalTableWidth) / 2;
-                const tableStartY = yPositionEntreprise + 23;
-
-                // Ajout d'un rectangle pour l'en-tête du tableau centré
-                doc.setDrawColor(rgbColor.r, rgbColor.g, rgbColor.b);
-                doc.setFillColor(rgbColor.r, rgbColor.g, rgbColor.b);
-                doc.roundedRect(startX, tableStartY, totalTableWidth, 9, 2, 2, "FD");
-
-                // Ajout du tableau des cotisations centré
-                doc.autoTable({
-                    startY: tableStartY + 7,
-                    head: [["ÉLÉMENTS DE PAIE", "BASE", "TAUX", "À DÉDUIRE", "À PAYER", "CHARGES PATRONALES"]],
-                    body: lignesPaie,
-                    margin: { left: startX },
-                    styles: {
-                        fontSize: 7,
-                        cellPadding: 1.42,
-                        overflow: 'linebreak',
-                        minCellHeight: 4.3,
-                        halign: 'left',
-                        textColor: [0, 0, 0]
-                    },
-                    headStyles: {
-                        fillColor: [rgbColor.r, rgbColor.g, rgbColor.b],
-                        textColor: [0, 0, 0],
-                        fontSize: 7,
-                        cellPadding: 2.2,
-                        halign: 'center'
-                    },
-                    columnStyles: {
-                        0: { cellWidth: columnWidths[0], fontStyle: 'bold', halign: 'left' },
-                        1: { cellWidth: columnWidths[1], halign: 'center' },
-                        2: { cellWidth: columnWidths[2], halign: 'center' },
-                        3: { cellWidth: columnWidths[3], halign: 'right' },
-                        4: { cellWidth: columnWidths[4], halign: 'right' },
-                        5: { cellWidth: columnWidths[5], halign: 'right' }
-                    },
-                    bodyStyles: { valign: 'middle' },
-                    alternateRowStyles: { fillColor: [rgbColor.r, rgbColor.g, rgbColor.b] },
-                    tableWidth: 'fixed'
-                });
-
-                // Sauvegarde du PDF
-                doc.save(`bulletin_paie_${nomSalarie.replace(/\s+/g, '_')}.pdf`);
-                alert("Fiche de paie générée avec succès !");
+        // Calcul du net à payer professionnel
+        function calculerNetAPayer(salaireBrut, tauxImpot = 0) {
+            // Cotisations salariales
+            const cotisationsSalariales = calculerCotisations(salaireBrut, 'salariales');
+            const totalCotisationsSalariales = cotisationsSalariales.total;
+            
+            // Net imposable (pour l'impôt)
+            const netImposable = salaireBrut - totalCotisationsSalariales + cotisationsSalariales.csg_non_deductible;
+            
+            // Impôt sur le revenu
+            const impotMensuel = (netImposable * tauxImpot) / 100;
+            
+            // Net à payer
+            const netAPayer = netImposable - impotMensuel;
+            
+            return {
+                netImposable: netImposable,
+                netAPayer: netAPayer,
+                cotisationsSalariales: cotisationsSalariales,
+                totalCotisationsSalariales: totalCotisationsSalariales,
+                impotMensuel: impotMensuel
             };
+        }
 
-            // Fonction utilitaire pour convertir une couleur hexadécimale en RGB
-            function hexToRgb(hex) {
-                const bigint = parseInt(hex.slice(1), 16);
-                const r = (bigint >> 16) & 255;
-                const g = (bigint >> 8) & 255;
-                const b = bigint & 255;
-                return { r, g, b };
-            }
+        // Mise à jour de l'aperçu net
+        function updateApercuNet() {
+            const salaireBrut = parseFloat(document.getElementById("salaireBrut").value) || 0;
+            const tauxImpot = parseFloat(document.getElementById("tauxImpot").value) || 0;
+            
+            const resultat = calculerNetAPayer(salaireBrut, tauxImpot);
+            document.getElementById("apercuNetAPayer").textContent = 
+                `Net à payer : ${resultat.netAPayer.toFixed(2)} €`;
+        }
 
-            // Calcul automatique du salaire brut
-            function updateSalaireBrut() {
-                const tauxHoraire = parseFloat(document.getElementById("tauxHoraire").value) || 0;
-                const heuresMensuelles = parseFloat(document.getElementById("heuresMensuelles").value) || 0;
-                const salaireBrut = tauxHoraire * heuresMensuelles;
-                document.getElementById("salaireBrut").value = salaireBrut.toFixed(2);
-                updateApercuNet();
-            }
+        // Calcul de l'impôt et mise à jour du taux
+        window.calculerTauxImpot = function() {
+            const salaireBrutMensuel = parseFloat(document.getElementById('salaireBrut').value) || 0;
+            const revenuBrutAnnuel = salaireBrutMensuel * 12;
+            const nbParts = getNbParts();
+            
+            const impotAnnuel = calculerImpot(revenuBrutAnnuel, nbParts);
+            const tauxImpot = (impotAnnuel / revenuBrutAnnuel) * 100;
+            
+            document.getElementById('tauxImpot').value = tauxImpot.toFixed(2);
+            document.getElementById('helpImpot').innerHTML = 
+                `Brut annuel: ${revenuBrutAnnuel.toFixed(0)} € | ${nbParts} part(s) | Impôt annuel: ${impotAnnuel.toFixed(2)} €`;
+            
+            updateApercuNet();
+        }
 
-            // Événements pour le calcul automatique
+        // Calcul automatique du salaire brut
+        function updateSalaireBrut() {
+            const tauxHoraire = parseFloat(document.getElementById("tauxHoraire").value) || 0;
+            const heuresMensuelles = parseFloat(document.getElementById("heuresMensuelles").value) || 0;
+            const salaireBrut = tauxHoraire * heuresMensuelles;
+            document.getElementById("salaireBrut").value = salaireBrut.toFixed(2);
+            updateApercuNet();
+        }
+
+        // Génération du PDF
+        window.genererPDF = function() {
+            const { jsPDF } = window.jspdf;
+            
+            // Récupération des données
+            const nomEntreprise = document.getElementById("nomEntreprise").value || "ENTREPRISE";
+            const adresseEntreprise = document.getElementById("adresseEntreprise").value || "Adresse";
+            const siret = document.getElementById("siret").value || "SIRET";
+            const codeNaf = document.getElementById("codeNaf").value || "NAF";
+            const telEntreprise = document.getElementById("telEntreprise").value || "Tel";
+            const emailEntreprise = document.getElementById("emailEntreprise").value || "Email";
+            
+            const nomSalarie = document.getElementById("nomSalarie").value || "SALARIE";
+            const adresseSalarie = document.getElementById("adresseSalarie").value || "Adresse";
+            const secuSalarie = document.getElementById("secuSalarie").value || "Secu";
+            const dateEntree = document.getElementById("dateEntree").value || "01/01/2020";
+            const posteOccupe = document.getElementById("posteOccupe").value || "Poste";
+            
+            const dateDebut = document.getElementById("dateDebut").value || "01/01/2025";
+            const dateFin = document.getElementById("dateFin").value || "31/01/2025";
+            const salaireBrut = parseFloat(document.getElementById("salaireBrut").value) || 0;
+            const tauxImpot = parseFloat(document.getElementById("tauxImpot").value) || 0;
+
+            // Calculs professionnels
+            const result = calculerNetAPayer(salaireBrut, tauxImpot);
+            const cotisationsPatronales = calculerCotisations(salaireBrut, 'patronales');
+
+            // Création du PDF
+            const doc = new jsPDF();
+            
+            // En-tête
+            doc.setFontSize(16);
+            doc.setTextColor(0, 0, 128);
+            doc.text("BULLETIN DE SALAIRE", 105, 15, { align: 'center' });
+            
+            // Informations entreprise
+            doc.setFontSize(10);
+            doc.setTextColor(0, 0, 0);
+            doc.text("EMPLOYEUR:", 20, 25);
+            doc.text(nomEntreprise, 20, 30);
+            doc.text(adresseEntreprise, 20, 35);
+            doc.text(`SIRET: ${siret} - NAF: ${codeNaf}`, 20, 40);
+            doc.text(`Tel: ${telEntreprise} - Email: ${emailEntreprise}`, 20, 45);
+            
+            // Informations salarié
+            doc.text("SALARIÉ:", 120, 25);
+            doc.text(nomSalarie, 120, 30);
+            doc.text(adresseSalarie, 120, 35);
+            doc.text(`Securité Sociale: ${secuSalarie}`, 120, 40);
+            doc.text(`Entrée: ${dateEntree} - Poste: ${posteOccupe}`, 120, 45);
+            
+            // Période
+            doc.text(`PÉRIODE DU ${dateDebut} AU ${dateFin}`, 105, 55, { align: 'center' });
+            
+            // Tableau principal
+            const tableData = [
+                ["SALAIRE BRUT", "", "", salaireBrut.toFixed(2)],
+                ["Cotisations salariales", "", "", ""],
+                ["- Maladie (0.75%)", "", "", result.cotisationsSalariales.maladie.toFixed(2)],
+                ["- Vieillesse plafonnée (6.9%)", "", "", result.cotisationsSalariales.vieillesse_plafonnee.toFixed(2)],
+                ["- Vieillesse déplafonnée (0.4%)", "", "", result.cotisationsSalariales.vieillesse_deplafonnee.toFixed(2)],
+                ["- Retraite compl. tranche 1 (3.15%)", "", "", result.cotisationsSalariales.retraite_complementaire1.toFixed(2)],
+                ["- Retraite compl. tranche 2 (0.9%)", "", "", result.cotisationsSalariales.retraite_complementaire2.toFixed(2)],
+                ["- Assurance chômage (2.4%)", "", "", result.cotisationsSalariales.chomage.toFixed(2)],
+                ["- CSG déductible (6.8%)", "", "", result.cotisationsSalariales.csg_deductible.toFixed(2)],
+                ["- CSG/CRDS non déductible (2.9%)", "", "", result.cotisationsSalariales.csg_non_deductible.toFixed(2)],
+                ["TOTAL COTISATIONS SALARIALES", "", "", result.totalCotisationsSalariales.toFixed(2)],
+                ["NET IMPOSABLE", "", "", result.netImposable.toFixed(2)],
+                ["Impôt sur le revenu", `${tauxImpot.toFixed(2)}%`, "", result.impotMensuel.toFixed(2)],
+                ["NET À PAYER", "", "", result.netAPayer.toFixed(2)]
+            ];
+            
+            doc.autoTable({
+                startY: 65,
+                head: [['DÉSIGNATION', 'TAUX', 'BASE', 'MONTANT']],
+                body: tableData,
+                theme: 'grid',
+                styles: { fontSize: 8 },
+                headStyles: { fillColor: [0, 0, 128] },
+                columnStyles: {
+                    0: { cellWidth: 90 },
+                    1: { cellWidth: 25 },
+                    2: { cellWidth: 25 },
+                    3: { cellWidth: 30, halign: 'right' }
+                }
+            });
+            
+            // Cotisations patronales
+            const tablePatronales = [
+                ["Cotisations patronales", "", "", ""],
+                ["- Maladie (13%)", "", "", cotisationsPatronales.maladie.toFixed(2)],
+                ["- Vieillesse plafonnée (8.55%)", "", "", cotisationsPatronales.vieillesse_plafonnee.toFixed(2)],
+                ["- Vieillesse déplafonnée (1.8%)", "", "", cotisationsPatronales.vieillesse_deplafonnee.toFixed(2)],
+                ["- Retraite compl. tranche 1 (8%)", "", "", cotisationsPatronales.retraite_complementaire1.toFixed(2)],
+                ["- Retraite compl. tranche 2 (1.6%)", "", "", cotisationsPatronales.retraite_complementaire2.toFixed(2)],
+                ["- Assurance chômage (4%)", "", "", cotisationsPatronales.chomage.toFixed(2)],
+                ["- Formation professionnelle (1%)", "", "", cotisationsPatronales.formation_pro.toFixed(2)],
+                ["- Taxe apprentissage (0.68%)", "", "", cotisationsPatronales.taxe_apprentissage.toFixed(2)],
+                ["- Versement mobilité (1%)", "", "", cotisationsPatronales.versement_mobilite.toFixed(2)],
+                ["- AGS (0.15%)", "", "", cotisationsPatronales.ags.toFixed(2)],
+                ["TOTAL COTISATIONS PATRONALES", "", "", cotisationsPatronales.total.toFixed(2)]
+            ];
+            
+            doc.autoTable({
+                startY: doc.lastAutoTable.finalY + 10,
+                body: tablePatronales,
+                theme: 'grid',
+                styles: { fontSize: 8 },
+                columnStyles: {
+                    0: { cellWidth: 90 },
+                    1: { cellWidth: 25 },
+                    2: { cellWidth: 25 },
+                    3: { cellWidth: 30, halign: 'right' }
+                }
+            });
+            
+            // Signature
+            doc.text("Fait à ___________________, le ___________________", 20, doc.lastAutoTable.finalY + 20);
+            doc.text("Signature et cachet de l'employeur", 20, doc.lastAutoTable.finalY + 30);
+            
+            // Sauvegarde
+            doc.save(`bulletin_${nomSalarie.replace(/\s+/g, '_')}.pdf`);
+        }
+
+        // Initialisation des événements
+        document.addEventListener('DOMContentLoaded', function() {
             document.getElementById("tauxHoraire").addEventListener("input", updateSalaireBrut);
             document.getElementById("heuresMensuelles").addEventListener("input", updateSalaireBrut);
             document.getElementById("salaireBrut").addEventListener("input", updateApercuNet);
             document.getElementById("tauxImpot").addEventListener("input", updateApercuNet);
             document.getElementById("statutMarital").addEventListener("change", calculerTauxImpot);
             document.getElementById("nbEnfants").addEventListener("change", calculerTauxImpot);
-
-            // Mode sombre
-            document.getElementById("toggleDarkMode").addEventListener("click", function () {
+            
+            document.getElementById("toggleDarkMode").addEventListener("click", function() {
                 document.body.classList.toggle("dark-mode");
             });
-
-            // Initialisation
+            
+            // Calcul initial
             updateApercuNet();
-        };
+        });
 
         // Désactiver le clic droit
         document.addEventListener('contextmenu', function(event) {
